@@ -1,0 +1,80 @@
+{{- with .Values.did }}{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: did-helper
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ .replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "purple-dsc.selectorLabels" $ | nindent 6 }}
+  template:
+    metadata:
+      {{- with .podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "purple-dsc.labels" $ | nindent 8 }}
+        {{- with .podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      containers:
+        - name: did-material
+          {{- with .securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .server.image }}:{{ .server.tag }}"
+          imagePullPolicy: {{ .server.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .server.port }}
+              protocol: TCP
+          {{- with .livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: did-material
+              mountPath: /home/static/did-material
+              readOnly: true
+          env: []
+      volumes:
+        - name: did-material
+          secret:
+            secretName: {{ .secretName }}
+
+      {{- with .imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}{{- end }}

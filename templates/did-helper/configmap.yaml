@@ -1,0 +1,16 @@
+{{- with .Values.did }}{{- if .enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: did-helper-cm
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+data:
+  runServer: "false"
+  outputFormat: "env"
+  outputFile: "/cert/did.env"
+  didType: "key"
+  {{- toYaml .config.server | nindent 2 }}
+  {{- toYaml .config.generateKey | nindent 2 }}
+{{- end }}{{- end }}

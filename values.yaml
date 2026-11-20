@@ -1,0 +1,2709 @@
+# = Note ===================================================================== #
+#                                                                              #
+#  This file defines all default values and configurable options for the Helm  #
+#  chart. Do NOT modify this file directly. Values that must be changed are    #
+#  marked with '<<>>' placeholders.                                            #
+#                                                                              #
+#  To customize settings, copy the relevant values into a separate override    #
+#  file (e.g. values.prod.yaml) and apply it using:                            #
+#                                                                              #
+#      helm upgrade --install -f values.yaml -f values.prod.yaml               #
+#                                                                              #
+#  Only override what you need, Helm will merge files in order.                #
+#                                                                              #
+# = Note ===================================================================== #
+#                                                                              #
+#  This configuration is mainly based on:                                      #
+#  https://github.com/FIWARE/data-space-connector/blob/main/k3s/provider.yaml  #
+#                                                                              #
+#  Changes introduced on top of the original configuration are documented      #
+#  throughout the file, including deployment fixes and application-specific    #
+#  issues encountered during integration.                                      #
+#                                                                              #
+#  When something exists and no clear reason was found for it, it will         #
+#  usually be followed by comments such as: 'I don't know why we do this'.     #
+#                                                                              #
+#  Feel free to investigate further if you are feeling adventurous. d(owo )    #
+#                                                                              #
+#  In general, the larger the comment block, the more time was invested in     #
+#  debugging, fixing, or understanding that particular section.                #
+#                                                                              #
+# ============================================================================ #
+
+# ============================================================================ #
+#                                   ANCHORS                                    #
+# ============================================================================ #
+
+_anchors:
+  #* cluster
+  - &clusterIssuer  "<<cluster-issuer>>"
+  - &ingressClass   "<<ingress-class>>"
+  - &kubeVersion    1.34-1
+  - &storageClass   "<<storage-class>>"
+  #* images
+  - &alpineImage  alpine:3.22
+  - &curlImage    curlimages/curl:8.20.0
+  #* kubernetes objects
+  - &didSecret        "did-secrets"
+  - &issuanceSecret   "issuance-secret"
+  #* hosts
+  - &ccsHost                ccs.<<hostname>>
+  - &cmpHost                cm-patch.<<hostname>>
+  - &kcHost                 keycloak.<<hostname>>
+  - &mpDataServiceHost      mp-data-service.<<hostname>>
+  - &mpHost                 marketplace.<<hostname>>
+  - &mpTmfApiHost           mp-tmf-api.<<hostname>>
+  - &papHost                pap.<<hostname>>
+  - &tmfHost                tm-forum-api.<<hostname>>
+  - &verifierHost           verifier.<<hostname>>
+  #* urls - public
+  - &dscUrl       https://<<hostname>>
+  - &kcUrl        https://keycloak.<<hostname>>
+  - &mpUrl        https://marketplace.<<hostname>>
+  - &tplUrl       https://til.<<trusted-anchor-hostname>>
+  - &tprUrl       https://tir.<<trusted-anchor-hostname>>
+  - &verifierUrl  https://verifier.<<hostname>>
+  #* urls - internal
+  - &ccsUrl       http://credentials-config-service:8080
+  - &dssUrl       http://data-service-scorpio:9090
+  - &kcHealthUrl  http://keycloak-metrics:9000/health/ready
+  - &papUrl       http://odrl-pap:8080
+  - &tilUrl       http://trusted-issuers-list:8080
+  - &tmfUrl       http://tm-forum-api-svc:8080
+  #* urls - verifier .well-known
+  - &cmpWellUrl             https://verifier.<<hostname>>/services/cm-patch/.well-known/openid-configuration
+  - &mpDataServiceWellUrl   https://verifier.<<hostname>>/services/data-service/.well-known/openid-configuration
+  - &tmfWellUrl             https://verifier.<<hostname>>/services/tmf-api/.well-known/openid-configuration
+  #* misc
+  - &kcRealm          "test-realm"
+  - &verifierWellNon  https://verifier.<<hostname>>
+  - &verifierId       x509_san_dns:verifier.<<hostname>>
+  - &apisixPass       "<<password>>"
+  - didCreds: &didCreds
+      country: "<<country>>"            # ES
+      state: "<<state>>"                # Madrid
+      locality: "<<locality>>"          # Madrid
+      organization: "<<organization>>"  # Fiware Inc.
+      commonName: "<<commonName>"       # www.fiware.org
+  - users: &keycloakUsers
+  # - users: &keycloakUsers
+  #     - username: "admin"
+  #       enabled: true
+  #       email: "admin@example.com"
+  #       firstName: "Test"
+  #       lastName: "Admin"
+  #       credentials:
+  #         - type: "password"
+  #           value: "admin"
+  #       clientRoles:
+  #         ${DID}: [ "admin" ]
+  #         account: [ "view-profile", "manage-account" ]
+  #       groups: []
+  #     - username: "employee"
+  #       enabled: true
+  #       email: "employee@example.com"
+  #       firstName: "Test"
+  #       lastName: "User"
+  #       credentials:
+  #         - type: "password"
+  #           value: "employee"
+  #       clientRoles:
+  #         ${DID}: [ "seller", "admin", "REPRESENTATIVE" ]
+  #         account: [ "view-profile", "manage-account" ]
+  #       groups: [ "/consumer" ]
+      - username: &kcDeviceUser "device"
+        enabled: true
+        email: "<<device-email>>"
+        firstName: "changemeFirstName"
+        lastName: "changemeLastName"
+        credentials:
+          - type: "password"
+            value: &kcDevicePassword "<<device-password>>"
+        clientRoles:
+          ${DID}: [ "admin", "seller", "REPRESENTATIVE", "OPERATOR", "READER" ]
+          account: [ "view-profile", "manage-account" ]
+        groups: [ "/consumer" ]
+  - annotations: &ingressAnnotations
+      kubernetes.io/tls-acme: "true"
+      cert-manager.io/cluster-issuer: *clusterIssuer
+      cert-manager.io/private-key-algorithm: "ECDSA" # IMPORTANT
+      cert-manager.io/private-key-size: "256"
+  - annotations: &hookAnnotations
+      "helm.sh/hook-weight": "0"
+      "helm.sh/hook": post-install
+      "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+
+# ============================================================================ #
+#                                    VALUES                                    #
+# ============================================================================ #
+
+# webhook: # TODO
+#   enabled: false
+#   url: https://change-me.localhost
+#   onUpgrade: false
+
+# = Note ===================================================================== #
+# The `did-helper` the provided by the connector is somewhat fragile, so some  #
+# cooking needed to be done.                                                   #
+#                                                                              #
+# Instead of deploying a `did-helper` that generates ephimeral cryptographic   #
+# material on startup (loosing the previous DID...), we run a Job that         #
+# generate a Secret with all the required artifacts. Those are mounted into a  #
+# minimal static website container.                                            #
+#                                                                              #
+# This approach makes the DID and its associated cryptographic material        #
+# available to other workloads whenever needed. Plus a Pod restart doesn't     #
+# break the DSC deployment.                                                    #
+#                                                                              #
+# This implementation currently supports only `did:key` identifiers. If we     #
+# migrate to `did:web` in the future, most (or all) of this machinery will     #
+# likely become unnecessary and can be removed.                                #
+#                                                            sign: The Janitor #
+# ============================================================================ #
+did:
+  # based on: https://github.com/FIWARE/helm-charts/tree/main/charts/did-helper
+  # changes: always generate key unless, "did.secretName" exists
+  enabled: true
+  job:
+    repository: quay.io/seamware/did-helper
+    pullPolicy: IfNotPresent
+    tag: "0.5.0"
+
+    annotations: *hookAnnotations
+
+  imagePullSecrets: []
+
+  secretName: *didSecret
+
+  genKeystorePassword:
+    enabled: true
+    name: &ksSecret    "keystore-password"
+    key:  &ksSecretKey "password"
+
+  server:
+    image: lipanski/docker-static-website
+    pullPolicy: IfNotPresent
+    tag: "2.1.0"
+    port: 3000
+
+  config:
+    server:
+      # Name of the secret containing the keystore password.
+      # If generateKey is used, this optional, but if provided it needs to be set with the secret name containing the password to be used for the created keystore
+      keystorePasswordSecretName: *ksSecret
+      # Key inside the secret containing the keystore password
+      # If generateKey is used, this optional, but if provided it needs to be set with the secret key containing the password to be used for the created keystore
+      keystorePasswordSecretKey: *ksSecretKey
+      # Alias for the key inside the keystore
+      # If generateKey is used, this is optional, but if provided, generated keystore will use this alias for the created key
+      keyAlias: "didPrivateKey"
+    generateKey: *didCreds
+
+  replicaCount: 1
+
+# = BUG PATCH ================================================================ #
+# Generate a ConfigMap and import the variables from it to avoid defining      #
+# duplicate `BAE_LP_SIOP_*` environment variables that would otherwise         #
+# override each other.                                                         #
+#                                                                              #
+# The configuration is sourced directly from `.dsc.marketplace`.               #
+# ============================================================================ #
+bae:
+  enabled: true
+
+# = BUG PATCH ================================================================ #
+# This section fully overrides Helm's deep-merged defaults to prevent          #
+# inherited keys from parent charts leaking into `users` and `databases` maps. #
+#                                                                              #
+# It pathches `dsc.decentralizedIam.vcAuthentication.managedPostgres` and      #
+# produces a leak clean resource.                                              #
+# ============================================================================ #
+## Usage of the postgres-operator - see https://github.com/zalando/postgres-operator
+managedPostgres:
+  enabled: true
+
+  # Note: the config was taken from this cool fella:
+  #       > https://github.com/FIWARE/data-space-connector/pull/73
+  # -- config as defined in https://github.com/zalando/postgres-operator/blob/master/charts/postgres-operator/crds/postgresqls.yaml
+  config:
+    teamId: "dsc"
+    numberOfInstances: 1
+    postgresql:
+      version: "16"
+    volume:
+      size: 1Gi
+      storageClass: *storageClass
+    users:
+      admin: # maintainer
+        - superuser
+        - createdb
+      til:
+        - createdb
+      ccs:
+        - createdb
+      pap:
+        - createdb
+      keycloak:
+        - createdb
+      scorpio:
+        - superuser #  to enable extensions
+        - createdb
+      # ih:           # Note: we dont use the identityhub
+      #   - createdb
+      # issuer:       # Note: I don't think we need this...
+      #   - createdb
+    databases:
+      ngb: scorpio
+      tildb: til
+      ccsdb: ccs
+      papdb: pap
+      keycloakdb: keycloak
+      # ih: ih
+      # issuer: issuer
+    patroni:
+      pg_hba: # Allow connections without ssl as db is not exposed
+        - local   all all           trust
+        - hostssl all all 0.0.0.0/0 md5
+        - host    all all 0.0.0.0/0 md5
+    preparedDatabases:
+      ngb:
+        defaultUsers: true
+        extensions:
+          postgis: public
+
+# = Note ===================================================================== #
+# TODO: ADD BIG NOTE HERE                                                      #
+# ============================================================================ #
+cmPatch:
+  enabled: true
+  image:
+    repository: repo/cm-patch
+    tag: 1.1.1
+    pullPolicy: IfNotPresent
+
+  registrySecret:
+    existingSecret: ""
+    name: cm-patch-credentials
+    auths: []
+      # - registry: ghcr.io
+      #   username: user
+      #   password: 1234
+
+  credentials:
+    keycloak:
+      address: http://keycloak:8080
+      realm: *kcRealm
+      clientId: account-console
+      username: *kcDeviceUser
+      scope: openid
+      password: *kcDevicePassword
+    configurations:
+      - id: marketplace-credential
+        format: jwt_vc
+        scope: external-marketplace
+
+  service:
+    port: 8080
+
+  livenessProbe: {}
+    # httpGet:
+    #   path: /health
+    #   port: http
+    # initialDelaySeconds: 30
+    # periodSeconds: 20
+  readinessProbe: {}
+    # httpGet:
+    #   path: /health
+    #   port: http
+    # initialDelaySeconds: 15
+    # periodSeconds: 10
+
+  resources: {}
+    # limits:
+    #   cpu: 500m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 256Mi
+
+  extraEnvs:
+    - name: APP_MODE
+      value: "PROD"
+    - name: APP_NAME
+      value: "cm-patch"
+    - name: APP_HOST
+      value: "cm-patch"
+    - name: APP_PORT
+      value: "8080"
+    - name: APP_IS_CLIENT
+      value: "true"
+    - name: APP_LOG_LEVEL
+      value: "DEBUG"
+
+    - name: HOLDER_KEY_PATH
+      value: "/cert/private-key.pem"
+    - name: HOLDER_DID
+      valueFrom:
+        secretKeyRef:
+          name: *didSecret
+          key: DID
+    - name: HOLDER_DSC_URL
+      value: *dscUrl
+    - name: HOLDER_PAP_URL
+      value: *papUrl
+    - name: HOLDER_TIL_URL
+      value: *tilUrl
+
+    - name: TMF_URL
+      value: *tmfUrl
+    - name: TMF_SUBCRIBE
+      value: "false"
+    - name: TMF_IGNORE_ORGS
+      value: ""
+
+  extraVolumes:
+    - name: signing-key
+      secret:
+        secretName: *didSecret
+        items:
+          - key: private-key.pem
+            path: private-key.pem
+
+  extraVolumeMounts:
+    - name: signing-key
+      mountPath: /cert
+
+  extraInitContainers: []
+    # - name: wait-for-scorpio
+    #   image: *curlImage
+    #   command:
+    #     - 'sh'
+    #     - '-c'
+    #     - |
+    #       set -e
+    #       echo "Waiting for Scorpio to become ready..."
+    #
+    #       until curl -sf ${SCORPIO_URL}/ngsi-ld/v1/types > /dev/null; do
+    #         echo "Scorpio is not ready yet, retrying..."
+    #         sleep 5
+    #       done
+    #       echo "Scorpio is ready."
+    #   env:
+    #     - name: 'SCORPIO_URL'
+    #       value: *dssUrl
+
+# = Note ===================================================================== #
+# Some components do not provide chart options for configuring their data,     #
+# such as policies in odrl-pap, entries in the trusted issuers list,           #
+# subscriptions in Scorpio, etc.                                               #
+#                                                                              #
+# Use the jobs section below to define additional Kubernetes Jobs for          #
+# configuring or populating these components.                                  #
+#                                                          sign: Mosi Pringles #
+# ============================================================================ #
+jobs:
+  enabled: false
+
+  serviceAccount:
+    create: false
+    name: &customJobsSaName ""
+
+  definitions: []
+    # register-pap-policies:
+    #   enabled: true
+    #   image: *curlImage
+    #   pullPolicy: IfNotPresent
+    #   command: ["/bin/sh","-c"]
+    #   args:
+    #     - |
+    #       set -e
+    #       echo "Waiting for ODRL-PAP to become ready..."
+    
+    #       until curl -fsS "${PAP_URL}/policy" > /dev/null; do
+    #         echo "ODRL-PAP is not ready yet, retrying..."
+    #         sleep 5
+    #       done
+    #       echo "ODRL-PAP is ready."
+
+    #       curl -fsSi -X POST "${PAP_URL}/policy" \
+    #         -H "Content-Type: application/json" \
+    #         --data-binary @- <<EOF
+    #       {
+    #         "@context": {
+    #           "odrl": "http://www.w3.org/ns/odrl/2/",
+    #           "xsd": "http://www.w3.org/2001/XMLSchema#"
+    #         },
+    #         "@id": "${DSC_URL}/policy/common/cm-patch/use/order",
+    #         "odrl:uid": "${DSC_URL}/policy/common/cm-patch/use/order",
+    #         "@type": "odrl:Policy",
+    #         "odrl:permission": {
+    #           "odrl:assigner": { "@id": "${DSC_URL}/" },
+    #           "odrl:target": {
+    #             "@type": "odrl:AssetCollection",
+    #             "odrl:source": "urn:asset",
+    #             "odrl:refinement": [
+    #               {
+    #                 "@type": "odrl:Constraint",
+    #                 "odrl:leftOperand": { "@id": "http:path" },
+    #                 "odrl:operator": { "@id": "http:isInPath" },
+    #                 "odrl:rightOperand": { "@value": "/order", "@type": "xsd:string" }
+    #               }
+    #             ]
+    #           },
+    #           "odrl:assignee": {
+    #             "@type": "odrl:PartyCollection",
+    #             "odrl:source": "urn:user",
+    #             "odrl:refinement": {
+    #               "@type": "odrl:Constraint",
+    #               "odrl:leftOperand": { "@id": "vc:type" },
+    #               "odrl:operator": { "@id": "odrl:hasPart" },
+    #               "odrl:rightOperand": {
+    #                 "@value": "MarketplaceCredential",
+    #                 "@type": "xsd:string"
+    #               }
+    #             }
+    #           },
+    #           "odrl:action": { "@id": "odrl:use" }
+    #         }
+    #       }
+    #       EOF
+
+    #   env:
+    #     - name: DSC_URL
+    #       value: *dscUrl
+    #     - name: PAP_URL
+    #       value: *papUrl
+    #   backoffLimit: 3
+    #   ttlSecondsAfterFinished: 600
+    #   rbac:
+    #     create: true
+    #     name: "test-custom-rbac"
+    #     rules:
+    #       - apiGroups: [""]
+    #         resources: ["secrets"]
+    #         verbs: ["get"]
+    #     subjects:
+    #       - kind: ServiceAccount
+    #         name: *customJobsSaName
+
+dsc:
+  enabled: true
+
+  # -- configuration to be shared between the issuance components
+  issuance:
+    generatePasswords:
+      enabled: true
+      secretName: *issuanceSecret
+
+  decentralizedIam:
+    enabled: true
+    fullnameOverride: "decentralizedIam"
+
+    # -- configuration for the vc-authentication to be deployed as part of the connector, see https://github.com/FIWARE/vc-authentication/tree/master
+    vcAuthentication:
+      enabled: true
+      fullnameOverride: "vcAuthentication"
+
+      ## Installation of the postgres-operator - see https://github.com/zalando/postgres-operator
+      postgres-operator:
+        enabled: false
+        fullnameOverride: "postgres-operator"
+
+      # = BUG ================================================================ #
+      # Helm performs deep-merging of map values across all value sources      #
+      # (`values.yaml`, `-f` overrides, subcharts, and chart defaults).        #
+      #                                                                        #
+      # This means default keys from parent charts or dependencies may persist #
+      # unless the entire object is explicitly overridden at the correct path. #
+      # Helm does NOT support deletion of individual map keys.                 #
+      #                                                                        #
+      # As a result, some configuration maps (e.g. `users`, `databases`) may   #
+      # contain inherited or unexpected keys if not fully overridden.          #
+      # ====================================================================== #
+      ## Usage of the postgres-operator - see https://github.com/zalando/postgres-operator
+      managedPostgres:
+        enabled: false
+
+      # -- configuration for the trusted-issuers-list to be deployed as part of the connector, see https://github.com/FIWARE/helm-charts/tree/main/charts/trusted-issuers-list for all options
+      trusted-issuers-list:
+        enabled: true
+        fullnameOverride: "trusted-issuers-list"
+
+        # -- connection to the database
+        database:
+          persistence: true
+          host: postgres
+          port: 5432
+          name: tildb
+          username: til
+          existingSecret:
+            enabled: true
+            name: til.postgres.credentials.postgresql.acid.zalan.do
+            key: password
+
+      # -- configuration for the vcverifier to be deployed as part of the connector, see https://github.com/FIWARE/helm-charts/tree/main/charts/vcverifier for all options
+      vcverifier:
+        enabled: true
+        fullnameOverride: "verifier"
+
+        ingress:
+          enabled: true
+          # Note: fiware components use `className`, not `ingressClassName`:
+          # > https://github.com/FIWARE/helm-charts/blob/main/charts/common/templates/_ingress.tpl
+          className: *ingressClass
+          annotations: *ingressAnnotations
+          hosts:
+            - host: *verifierHost
+              paths:
+                - "/"
+          tls:
+            - secretName: vcverifier-tls
+              hosts:
+                - *verifierHost
+
+        deployment:
+          server:
+            # = Note ========================================================= #
+            # After some painful debugging, thanks to the immoral logging and  #
+            # cheapskate documentation culture, we went deep in the sauce.     #
+            # tracing the issue to the following code:                         #
+            #                                                                  #
+            # ```go                                                            #
+            # // file: openapi/api_frontend.go                                 #
+            # if !slices.Contains(cro.Aud, getFrontendVerifier().GetHost()) {  #
+            #    c.AbortWithStatusJSON(http.StatusInternalServerError,         #
+            #                          ErrorMessageInvalidAudience)            #
+            #    return                                                        #
+            # }                                                                #
+            # ```                                                              #
+            #                                                                  #
+            # The issue appears to be a mismatch between the expected format   #
+            # of the JWT audience (`cro.Aud`) and the value returned by        #
+            # `getFrontendVerifier().GetHost()`.                               #
+            #                                                                  #
+            # Specifically, `cro.Aud` contains the full service URL from the   #
+            # JWT (e.g. including scheme and host), while `GetHost()`          #
+            # returns only the host component (or a partial identifier).       #
+            #                                                                  #
+            # As a result, the comparison fails even when both refer to the    #
+            # same service, because the string formats differ. (._. )          #
+            # ================================================================ #
+            host: *verifierUrl
+
+          # -- logging configuration
+          logging:
+            # -- the log level, can be DEBUG, INFO, WARN, ERROR
+            # level: INFO
+            level: DEBUG
+
+          # TODO: maybe we need to extend this config...
+          #       https://github.com/fiware/vcverifier#configuration
+          # -- config repo configuration
+          configRepo:
+            configEndpoint: *ccsUrl
+
+          # = Note ============================================================= #
+          # Because the DID is only known after deploy we need to generate a new #
+          # `/configs/server.yaml` after the DID generation and hook it to the   #
+          # pod. To do that we use the default config file as our base and using #
+          # a init container we override the file DID, save it into a empty      #
+          # volume and mount it to the pod.                                      #
+          # ==================================================================== #
+          alternativeConfig: /alternative-conf/server.yaml
+
+          additionalEnvVars:
+            - &didEnv
+              name: DID
+              valueFrom:
+                secretKeyRef:
+                  name: *didSecret
+                  key: DID
+
+          # -- configuration required for the verifier functionality
+          verifier:
+            did: __DID__
+            # = Note ========================================================= #
+            # Special thanks to the worst terrorist this company has to offer: #
+            # Mosi Pringles. He tried his best to resolve this issue but it    #
+            # didn't budge.                                                    #
+            #                                              signed: The Janitor #
+            # ================================================================ #
+            tirAddress: *tprUrl
+            # -- expiry of a login-session in seconds
+            sessionExpiry: 30
+            # -- validation mode for validation the vcs (dont get confused, its just about validation, verfication happens anyways)
+            # applicable modes:
+            # * `none`: No validation, just swallow everything
+            # * `combined`: ld and schema validation
+            # * `jsonLd`: uses JSON-LD parser for validation
+            # * `baseContext`: validates that only the fields and values (when applicable)are present in the document. No extra fields are allowed (outside of credentialSubject).
+            # Default is set to `none` to ensure backwards compatibility
+            validationMode: none
+
+
+            # Note: I don't know why we do this
+            # supportedModes: ["byValue", "byReference"]
+            supportedModes: ["urlEncoded", "byValue", "byReference"]
+            clientIdentification:
+              id: *verifierId
+              keyPath: /signing-key/private-key.pem
+              requestKeyAlgorithm: ES256
+              certificatePath: /certificate/cert.pem
+
+          initContainers:
+            - name: render-config
+              image: *alpineImage
+              command: ["/bin/sh", "-xeuc"]
+              args:
+                - |
+                  sed "s/__DID__/${DID}/" \
+                    /original-conf/server.yaml > /alternative-conf/server.yaml
+              env:
+                - *didEnv
+              volumeMounts:
+                - name: alternative-conf
+                  mountPath: /alternative-conf
+                - name: config-volume
+                  mountPath: /original-conf/
+            - name: register-at-tir
+              image: *curlImage
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  curl -siL -X POST "${TIL_URL}/issuer" \
+                    -H "Content-Type: application/json" \
+                    -d '{"did":"'"${DID}"'","credentials":[]}'
+              env:
+                - *didEnv
+                - name: TIL_URL
+                  value: *tplUrl
+
+          additionalVolumes:
+            - name: alternative-conf
+              emptyDir: {}
+            - name: vcverifier-tls
+              secret:
+                secretName: vcverifier-tls
+
+          additionalVolumeMounts:
+            - name: alternative-conf
+              mountPath: /alternative-conf
+            # Note: I don't know why we do this
+            # Note(del muerto de hambre de Jorge): Como el certificado expedido
+            # por LetsEncrypt acabará caducando y habrá que reiniciar el pod a
+            # mano para que el secreto se vuelva a montar. Probablmenete es
+            # mejor no usar subPath y guardarlos en la misma ruta. Tanto el
+            # certificado como la clave privada. Que no sé si el verifier las
+            # lee cada vez del disco o las guarda en memoria.
+            - name: vcverifier-tls
+              mountPath: /certificate/cert.pem
+              subPath: tls.crt
+            - name: vcverifier-tls
+              mountPath: /signing-key/private-key.pem
+              subPath: tls.key
+
+      # -- configuration for the credentials-config-service to be deployed as part of the connector, see https://github.com/FIWARE/helm-charts/tree/main/charts/credentials-config-service for all options
+      credentials-config-service:
+        enabled: true
+        fullnameOverride: "credentials-config-service"
+
+        # -- connection to the database
+        database:
+          persistence: true
+          host: postgres
+          port: 5432
+          name: ccsdb
+          dialect: POSTGRES
+          username: ccs
+          existingSecret:
+            enabled: true
+            name: ccs.postgres.credentials.postgresql.acid.zalan.do
+            key: password
+
+        # -- configuration to be included in the application.yaml file
+        config: {}
+
+        ## deployment specific configuration
+        deployment:
+          # -- resources assigned to the deployment pod
+          resources: {}
+          # resources:
+            # limits:
+              # cpu: 100m
+              # memory: 128Mi
+            # requests:
+              # cpu: 100m
+              # memory: 128Mi
+        ## pod autoscaling configuration, use for automatic scaling of the broker pods
+        autoscaling:
+          enabled: false
+          minReplicas: 1
+          maxReplicas: 10
+          # -- metrics to react on
+          metrics: []
+          ## List of MetricSpecs to decide whether to scale
+          # See https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#metricspec-v2beta2-autoscaling
+          # scaler targets to hold average cpu around 80%
+          #- type: Resource
+          #  resource:
+          #    name: cpu
+          #     target:
+          #      type: Utilization
+          #      averageUtilization: 80
+          ## scaler targets to hold average memory around 80%
+          #  - type: Resource
+          #    resource:
+          #      name: memory
+          #      target:
+          #        type: Utilization
+          #        averageUtilization: 80
+
+        ## openshift specific route definition. Will not work on plain k8s
+        route:
+          enabled: false
+
+        ## ingress configuration
+        ingress:
+          enabled: false # Note: for tests it can help to have this public
+          className: *ingressClass
+          annotations:
+            <<: *ingressAnnotations
+            ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+            - host: *ccsHost
+              paths: ["/"]
+          tls:
+            - secretName: ccs-tls
+              hosts:
+                - *ccsHost
+
+        # -- port that the til container uses
+        port: 8080
+
+        ## configuration for prometheus montioring
+        prometheus:
+          enabled: false
+
+        # -- a list of additional env vars to be set, check the til docu for all available options
+        additionalEnvVars:
+          - *didEnv
+          - name: FLYWAY_DATASOURCES_DEFAULT_LOCATIONS
+            value: classpath:db/migration/common,classpath:db/migration/mysql
+
+        ## configure automatic registration of credentials and services on deploy
+        registration:
+          enabled: true
+          job:
+            initContainers:
+              waitForHost:
+                enabled: true
+                path: /health
+            activeDeadlineSeconds: null
+          backoffLimit: 10
+          # -- optional prepariation script
+          # Note: We do the scary curl because we can't mount the DID env...
+          prepScript: >
+            sleep 1;
+            export $(curl -sL http://did-helper:3000/did-material/did.env)
+
+          # -- configuration of the services (and scopes) to be registred
+          services: # TODO: read more about this...
+            - id: tpp-service
+              defaultOidcScope: "operator"
+              authorizationType: "DEEPLINK"
+              oidcScopes:
+                "operator":
+                  credentials:
+                    - &oidcScopesCredential
+                      type: OperatorCredential
+                      trustedParticipantsLists:
+                        - *tprUrl
+                      trustedIssuersLists:
+                        - *tilUrl
+                      jwtInclusion:
+                        enabled: true
+                        fullInclusion: true
+            - id: bae
+              defaultOidcScope: "openid learcredential"
+              authorizationType: "FRONTEND_V2"
+              oidcScopes:
+                "openid learcredential":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: LegalPersonCredential
+                  presentationDefinition: &legalPersonPD
+                    id: legal-person-pd
+                    input_descriptors:
+                      - id: legal-person-query
+                        constraints:
+                          fields:
+                            - id: vct
+                              path: ["$.vct"]
+                              filter:
+                                const: "LegalPersonCredential"
+                            - id: subject
+                              path: ["$.firstName"]
+                            - id: roles
+                              path: ["$.roles"]
+                        format:
+                          "vc+sd-jwt":
+                            alg: ["ES256"]
+                    format:
+                      "vc+sd-jwt":
+                        alg: ["ES256"]
+                  # = Note =================================================== #
+                  # The wallets we are using don't support Digital Credentials #
+                  # Query Language (`dcql`) defined by *OpenID4VP 1.0*.        #
+                  #                                                            #
+                  # Wallet logs:                                               #
+                  # ... : OpenId4VPAuthorization received                      #
+                  # ... : Currently only PresentationDefinition is supported   #
+                  # ========================================================== #
+                  # dcql:
+                  #   credentials:
+                  #     - &legalPersonDCQL
+                  #       id: legal-person-query
+                  #       format: "vc+sd-jwt"
+                  #       multiple: false
+                  #       claims:
+                  #         - id: name-claim
+                  #           path:
+                  #             - firstName
+                  #         - id: roles-claim
+                  #           path:
+                  #             - roles
+                  #       meta:
+                  #         vct_values:
+                  #           - LegalPersonCredential
+            - id: data-service
+              defaultOidcScope: "default"
+              authorizationType: "DEEPLINK"
+              oidcScopes:
+                "default":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: UserCredential
+                  presentationDefinition: &userPD
+                    id: user-pd
+                    input_descriptors:
+                      - id: user-query
+                        constraints:
+                          fields:
+                            - id: type
+                              path: ["$.type"]
+                              filter:
+                                type: array
+                                contains:
+                                  const: "UserCredential"
+                        format:
+                          jwt_vc_json:
+                            alg: ["ES256"]
+                    format:
+                      jwt_vc_json:
+                        alg: ["ES256"]
+                  # dcql:
+                  #   credentials:
+                  #     - &userDCQL
+                  #       id: user-query
+                  #       format: "jwt_vc_json"
+                  #       multiple: true
+                  #       meta:
+                  #         type_values:
+                  #           - [UserCredential]
+                "legal":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: LegalPersonCredential
+                  presentationDefinition: *legalPersonPD
+                  # dcql:
+                  #   credentials:
+                  #     - *legalPersonDCQL
+                "operator":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: OperatorCredential
+                  # = Note =================================================== #
+                  # This `presentationDefinition` has not been tested. If auth #
+                  # issues occur, this might be a contributing factor. This    #
+                  # `yaml` is straight from *Gepeto the Eternal Wordsmith*.    #
+                  #                                          sign: The Janitor #
+                  # ========================================================== #
+                  presentationDefinition: &operatorPD
+                    id: operator-pd
+                    input_descriptors:
+                      - id: operator-query
+                        constraints:
+                          fields:
+                            - id: type
+                              path: ["$.type"]
+                              filter:
+                                type: array
+                                contains:
+                                  const: "OperatorCredential"
+                        format:
+                          jwt_vc_json:
+                            alg: ["ES256"]
+                  # dcql:
+                  #   credentials:
+                  #     - &operatorDCQL
+                  #       id: operator-query
+                  #       format: "jwt_vc_json"
+                  #       multiple: true
+                  #       meta:
+                  #         type_values:
+                  #           - [OperatorCredential]
+            - id: dsp
+              defaultOidcScope: "openid"
+              authorizationType: "DEEPLINK"
+              oidcScopes:
+                "openid":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: MembershipCredential
+                      trustedIssuersLists: ["*"]
+                  presentationDefinition: &membershipPD
+                    id: membership-pd
+                    input_descriptors:
+                      - id: membership-query
+                        constraints:
+                          fields:
+                            - id: type
+                              path: ["$.type"]
+                              filter:
+                                type: array
+                                contains:
+                                  const: "MembershipCredential"
+                        format:
+                          jwt_vc_json:
+                            alg: ["ES256"]
+                  # dcql:
+                  #   credentials:
+                  #     - &membershipDCQL
+                  #       id: mc-query
+                  #       format: "jwt_vc_json"
+                  #       multiple: true
+                  #       meta:
+                  #         type_values:
+                  #           - [MembershipCredential]
+            # Note =========================================================== #
+            # We rolled these ourselves because, FIWARE be lacking...          #
+            #                                                                  #
+            # They seem to work. Don't touch them too much. I don't know if we #
+            # messed up the values or if they forgor.                          #
+            # ================================================================ #
+            - id: "${DID}"
+              defaultOidcScope: "openid learcredential"
+              authorizationType: "FRONTEND_V2"
+              oidcScopes:
+                "openid learcredential":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: LegalPersonCredential
+                  presentationDefinition: *legalPersonPD
+                  # dcql:
+                  #   credentials:
+                  #     - *legalPersonDCQL
+            - id: tmf-api
+              defaultOidcScope: "default"
+              authorizationType: "DEEPLINK"
+              oidcScopes:
+                "default":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: UserCredential
+                  presentationDefinition: *userPD
+                  # dcql:
+                  #   credentials:
+                  #     - *userDCQL
+                "legal":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: LegalPersonCredential
+                  presentationDefinition: *legalPersonPD
+                  # dcql:
+                  #   credentials:
+                  #     - *legalPersonDCQL
+                "operator":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: OperatorCredential
+                  presentationDefinition: *operatorPD
+                  # dcql:
+                  #   credentials:
+                  #     - *operatorDCQL
+            - id: cm-patch
+              defaultOidcScope: "external-marketplace"
+              authorizationType: "DEEPLINK"
+              oidcScopes:
+                "external-marketplace":
+                  credentials:
+                    - <<: *oidcScopesCredential
+                      type: MarketplaceCredential
+                      trustedIssuersLists: ["*"]
+                  presentationDefinition: &marketplacePD
+                    id: marketplace-pd
+                    input_descriptors:
+                      - id: marketplace-query
+                        constraints:
+                          fields:
+                            - id: type
+                              path: ["$.type"]
+                              filter:
+                                type: array
+                                contains:
+                                  const: "MarketplaceCredential"
+                        format:
+                          jwt_vc_json:
+                            alg: ["ES256"]
+                  # dcql:
+                  #   credentials:
+                  #     - &marketplaceDCQL
+                  #       id: mc-query
+                  #       format: "jwt_vc_json"
+                  #       multiple: true
+                  #       meta:
+                  #         type_values:
+                  #           - [MarketplaceCredential]
+
+      # -- configuration for the digital-signature.service to be deployed as part of the connector in case of did:elsi support
+      dss:
+        enabled: false
+
+    # configuration for the odrl-authorization to be deployed as part of the connector, see https://github.com/FIWARE/odrl-authorization/tree/master
+    odrlAuthorization:
+      enabled: true
+      fullnameOverride: "odrlAuthorization"
+
+      # -- configuration for the odrl-pap to be deployed as part of the connector, see https://apisix.apache.org/
+      apisix:
+        enabled: true
+        fullnameOverride: "apisix"
+
+        apisix:
+          # admin:
+          #   credentials:
+          #     admin: *apisixPass
+          #   allow:
+          #     ipList:
+          #       - 0.0.0.0/0
+          etcd:
+            replicaCount: 1
+            persistence:
+              enabled: false
+          deployment:
+            mode: traditional
+            role: "traditional"
+            role_traditional:
+              config_provider: "etcd"
+            role_data_plane:
+              config_provider: "etcd"
+          # Note: I don't know why this is disabled :)
+          catchAllRoute:
+            enabled: false
+
+        # Note: I don't know why this is disabled :)
+        catchAllRoute:
+          enabled: false
+
+        ingress-controller:
+          enabled: false
+
+        control:
+          enabled: true
+          service:
+            type: ClusterIP
+
+        ingress:
+          enabled: true
+          className: *ingressClass
+          annotations: *ingressAnnotations
+          hosts:
+            # - host: apisix.local
+            #   paths: ["/*"]
+            - host: *mpDataServiceHost
+              paths: ["/"]
+            - host: *mpTmfApiHost
+              paths: ["/"]
+            - host: *cmpHost
+              paths: ["/"]
+          tls:
+            - secretName: apisix-tls
+              hosts:
+                - *mpDataServiceHost
+                - *mpTmfApiHost
+                - *cmpHost
+
+        routes:
+          - uri: /.well-known/openid-configuration
+            host: *mpDataServiceHost
+            upstream: &verifierUpstream
+              nodes:
+                verifier:3000: 1
+              type: roundrobin
+            plugins:
+              proxy-rewrite:
+                uri: /services/tpp-service/.well-known/openid-configuration
+          - uri: /.well-known/openid-configuration
+            host: *mpDataServiceHost
+            upstream: *verifierUpstream
+            plugins:
+              proxy-rewrite:
+                uri: /services/data-service/.well-known/openid-configuration
+          - uri: /.well-known/openid-configuration
+            host: *cmpHost
+            upstream: *verifierUpstream
+            plugins:
+              proxy-rewrite:
+                uri: /services/cm-patch/.well-known/openid-configuration
+          - uri: /*
+            host: *cmpHost
+            priority: 100
+            vars:
+              - ["uri", "~~", "/\\.well-known/openid-configuration$"]
+            upstream: *verifierUpstream
+            plugins:
+              proxy-rewrite:
+                uri: /services/cm-patch/.well-known/openid-configuration
+          - uri: /.well-known/data-space-configuration
+            # Note: I think this is meant to work with any host under apisix
+            # host:
+            upstream: &dsconfigUpstream
+              nodes:
+                dsconfig:3002: 1
+              type: roundrobin
+            plugins:
+              proxy-rewrite:
+                uri: /.well-known/data-space-configuration/data-space-configuration.json
+              response-rewrite:
+                headers:
+                  set:
+                    content-type: application/json
+          - uri: /*
+            host: *mpDataServiceHost
+            upstream: &scorpioUpstream
+              nodes:
+                data-service-scorpio:9090: 1
+              type: roundrobin
+            plugins:
+              openid-connect:
+                bearer_only: true
+                use_jwks: true
+                client_id: data-service
+                client_secret: unused
+                ssl_verify: false
+                # Note: I think we could do this internally...
+                discovery: *mpDataServiceWellUrl
+              opa:
+                host: "http://localhost:8181"
+                policy: policy/main
+                with_body: true
+          - uri: /.well-known/openid-configuration
+            host: *mpTmfApiHost
+            upstream: *verifierUpstream
+            plugins:
+              proxy-rewrite:
+                uri: /services/tmf-api/.well-known/openid-configuration
+          - uri: /*
+            host: *mpTmfApiHost
+            upstream: &tmfUpstream
+              nodes:
+                tm-forum-api-svc:8080: 1
+              type: roundrobin
+            plugins:
+              openid-connect:
+                bearer_only: true
+                use_jwks: true
+                client_id: cm-patch
+                client_secret: unused
+                ssl_verify: false
+                discovery: *tmfWellUrl
+              opa:
+                host: "http://localhost:8181"
+                policy: policy/main
+                with_body: true
+          - uri: /*
+            host: *cmpHost
+            upstream: &cmpUpstream
+              nodes:
+                cm-patch:8080: 1
+              type: roundrobin
+            plugins:
+              openid-connect:
+                bearer_only: true
+                use_jwks: true
+                client_id: cm-patch
+                client_secret: unused
+                ssl_verify: false
+                discovery: *cmpWellUrl
+              opa:
+                host: http://localhost:8181
+                policy: policy/main
+                with_body: true
+
+      # -- configuration for the odrl-pap to be deployed as part of the connector, see https://github.com/FIWARE/helm-charts/tree/main/charts/odrl-pap for all options
+      odrl-pap:
+        enabled: true
+        fullnameOverride: "odrl-pap"
+
+        additionalEnvVars:
+          - <<: *didEnv
+            name: GENERAL_ORGANIZATION_DID
+          # Note: Don't know it's going to works, already spent +1h searching
+          #       for ways to configure logging levels... `q(-_- )`
+          - name: LOGGER_LEVELS_ROOT
+            # value: TRACE
+            value: INFO
+
+        ## deployment specific configuration
+        deployment: {}
+          # resources:
+          #   limits:
+          #     cpu: 100m
+          #     memory: 128Mi
+          #   requests:
+          #     cpu: 100m
+          #     memory: 128Mi
+
+        # -- connection to the database
+        database:
+          # Note: this is a JDBC connection string.
+          #       https://en.wikipedia.org/wiki/Java_Database_Connectivity
+          url: jdbc:postgresql://postgres:5432/papdb
+          username: pap
+          existingSecret:
+            enabled: true
+            name: pap.postgres.credentials.postgresql.acid.zalan.do
+            key: password
+
+        ingress:
+          enabled: false
+          className: *ingressClass
+          annotations: *ingressAnnotations
+          hosts:
+            - host: *papHost
+              paths: ["/"]
+          tls:
+            - secretName: odrl-pap-tls
+              hosts:
+                - *papHost
+
+        ## configuration intended for the management endpoints, e.g. health and monitoring
+        management:
+          prometheus:
+            enabled: false
+
+        ## configuration to provide additional mappings from odrl to rego
+        additionalMapping:
+          enabled: false
+          # -- mapping.json to merged with the defaults
+          # the example would overwrite the default odrl:use to be handled by a custom rego method provided with the additional rego
+          # json: |
+          #   {
+          #     "action": {
+          #       "odrl": {
+          #         "use" : {
+          #           "regoPackage": "custom.action as custom_action",
+          #           "regoMethod": "custom_action.is_use(helper.http_part)"
+          #         }
+          #       }
+          #     }
+          #   }
+
+        ## configuration to provide additonal rego packages
+        additionalRego:
+          enabled: false
+          # packages: |
+          #   action.rego: |
+          #     package odrl.action
+          #
+          #     import rego.v1
+          #
+          #     ## odrl:use
+          #     # checks if the given request is a usage - in constrast to the default, this example would only consider modifications a "use"
+          #     is_use(request) if {
+          #         methods := ["POST", "PUT", "PATCH"]
+          #         request.method in methods
+          #     }
+
+      # -- configuration for the open-policy-agent to be deployed as part of the connector fulfilling the role of the PDP, as a sidecar to apisix
+      opa:
+        enabled: true # default
+
+      # -- integration of checks for the transfer process protocol
+      tpp:
+        enabled: false  # Note: I think this is for rainbow stuff... ( ._.)p
+
+  ## configuration of the context-broker - see https://github.com/FIWARE/helm-charts/tree/main/charts/scorpio-broker-aaio for details
+  scorpio:
+    enabled: true
+    fullnameOverride: "data-service-scorpio"
+
+    image:
+      repository: scorpiobroker/all-in-one-runner
+      tag: java-4.1.10
+    service:
+      type: ClusterIP
+      port: 9090
+
+    ## configuration of the database to be used by broker
+    db:
+      dbhost: postgres
+      user: scorpio
+      existingSecret:
+        enabled: true
+        name: scorpio.postgres.credentials.postgresql.acid.zalan.do
+        key: password
+
+    readinessProbe:
+      path: /q/health
+    livenessProbe:
+      path: /q/health
+
+    # TODO: not sure this is right
+    # -- configuration to register the dataplane at the credentials-config-service
+    ccs: &ccsSetup
+      enabled: true
+      id: scorpio
+      endpoint: *ccsUrl
+      configMap: &scorpioConfigMap scorpio-registration
+      defaultOidcScope:
+        name: default
+        credentialTypes:
+          - LegalPersonCredential
+        trustedParticipantsLists: *tprUrl
+        trustedIssuersLists: *tilUrl
+
+    # -- additional init containers to be used for the dataplane
+    initContainers:
+      - name: register-credential-config
+        image: *curlImage
+        command: [ "/bin/sh", "-c", "/bin/init.sh" ]
+        volumeMounts:
+          - name: *scorpioConfigMap
+            mountPath: /bin/init.sh
+            subPath: init.sh
+    # -- additonal volumes to be mounted for the dataplane
+    additionalVolumes:
+      - name: *scorpioConfigMap
+        configMap:
+          name: *scorpioConfigMap
+          defaultMode: 0755
+
+    # resources:
+    #   limits:
+    #     cpu: 100m
+    #     memory: 128Mi
+    #   requests:
+    #     cpu: 100m
+    #     memory: 128Mi
+
+  # -- configuration to issue credentials, using a did:elsi
+  elsi:
+    enabled: false # Note: We don't use blockchain stuff
+
+  ## configuration of the keycloak - see https://github.com/bitnami/charts/tree/main/bitnami/keycloak for details
+  keycloak:
+    enabled: true
+    fullnameOverride: "keycloak"
+
+    kubeVersion: *kubeVersion
+
+    global:
+      security:
+        allowInsecureImages: true
+    image:
+      repository: bitnamilegacy/keycloak
+
+    # -- disable the security context, required by the current quarkus container, will be solved in the future chart versions of keycloak
+    containerSecurityContext:
+      enabled: false
+
+    httpEnabled: true         # KC_HTTP_ENABLED
+    proxyHeaders: xforwarded  # KC_PROXY_HEADERS
+
+    ingress:
+      enabled: true
+      hostname: *kcHost
+      ingressClassName: *ingressClass
+      annotations: *ingressAnnotations
+      tls: true
+
+    metrics: # Note: enable this to have port 9000 abaible
+      enabled: true
+
+    containerPorts:
+      http: 8080
+      https: 8443
+      management: 9000
+    extraPorts:
+      - name: discovery
+        containerPort: 7200
+
+    tls:
+      enabled: false
+    service:
+      type: ClusterIP
+      ports:
+        http: 8080
+        https: 8443
+        management: 9000
+      extraPorts:
+        - name: discovery
+          port: 7200
+          targetPort: 7200
+
+    # -- authentication config for keycloak
+    auth:
+      adminUser: keycloak-admin
+      passwordSecretKey: keycloak-admin
+      existingSecret: *issuanceSecret
+
+    # -- sets memory requests for keycloak
+    # increased above the bitnami defaults to prevent OOMs in linux kernel >=6.14
+    resources:
+      requests:
+        memory: "500Mi"
+        cpu: "0.5"
+      limits:
+        memory: "2Gi"
+        cpu: "1"
+
+    # -- increase thresholds to prevent crashloops in low resource deployments
+    livenessProbe:
+      failureThreshold: 20
+    readinessProbe:
+      failureThreshold: 20
+
+    # -- should the db be deployed as part of the keycloak chart
+    postgresql:
+      enabled: false
+    # -- host of the external db to be used
+    externalDatabase:
+      host: postgres
+      database: keycloakdb
+      user: keycloak
+      existingSecret: keycloak.postgres.credentials.postgresql.acid.zalan.do
+      existingSecretPasswordKey: password
+
+    # -- extra volumes to be mounted
+    extraVolumeMounts:
+      - name: realms
+        mountPath: /opt/bitnami/keycloak/data/import
+      - name: did-material
+        mountPath: /did-material
+    extraVolumes:
+      - name: realms
+        configMap:
+          name: test-realm-realm
+      - name: did-material
+        secret:
+          secretName: *didSecret
+
+    # Note: for more options go to: https://www.keycloak.org/server/all-config
+    # -- extra env vars to be set. we require them at the moment, since some of the chart config mechanisms only work with the bitnami-image
+    extraEnvVars:
+      - name: KEYCLOAK_EXTRA_ARGS
+        value: "--import-realm --health-enabled true"
+      - name: KC_FEATURES
+        value: "oid4vc-vci"
+      # set in accordance with the memory requests, will result in OOM otherwise
+      - name: KC_HEAP_SIZE
+        value: "1024m"
+      - *didEnv
+      - name: KC_ADMIN_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: issuance-secret
+            key: keycloak-admin
+      - name: "STORE_PASS"
+        valueFrom:
+          secretKeyRef:
+            name: *ksSecret
+            key: *ksSecretKey
+
+    issuerDid: "${DID}"
+    signingKey:
+      storePath: /did-material/cert.pfx
+      storePassword: "${STORE_PASS}"
+      keyAlias: didPrivateKey
+      keyPassword: "${STORE_PASS}"
+      did: "${DID}"
+      keyAlgorithm: ES256
+
+    # -- configuration of the realm to be imported
+    realm:
+      import: true
+      name: *kcRealm
+      frontendUrl: *kcUrl
+      sslRequired: none
+      # -- realm attributes. Support string (old style) or key-value
+      attributes:
+        issuerDid: "${DID}"
+        vc.user-sd.credential_signing_alg_values_supported: ES256
+        vc.user-sd.credential_build_config.signing_algorithm: ES256
+        vc.user-sd.credential_build_config.token_jws_type: vc+sd-jwt
+        vc.user-sd.credential_build_config.proof_types_supported: '{"jwt":{"proof_signing_alg_values_supported":["ES256"]}}'
+        vc.user-sd.format: vc+sd-jwt
+        vc.user-sd.scope: LegalPersonCredential
+        vc.user-sd.vct: LegalPersonCredential
+        vc.user-sd.credential_build_config.visible_claims: 'roles,email'
+        vc.user-sd.credential_build_config.decoys: '0'
+        vc.user-credential.credential_signing_alg_values_supported: ES256
+        vc.user-credential.credential_build_config.signing_algorithm: ES256
+        vc.user-credential.credential_build_config.token_jws_type: JWT
+        vc.user-credential.credential_build_config.proof_types_supported: '{"jwt":{"proof_signing_alg_values_supported":["ES256"]}}'
+        vc.user-credential.format: jwt_vc
+        vc.user-credential.scope: UserCredential
+        vc.user-credential.vct: UserCredential
+        vc.legal-person-credential.credential_signing_alg_values_supported: ES256
+        vc.legal-person-credential.credential_build_config.signing_algorithm: ES256
+        vc.legal-person-credential.credential_build_config.token_jws_type: JWT
+        vc.legal-person-credential.credential_build_config.proof_types_supported: '{"jwt":{"proof_signing_alg_values_supported":["ES256"]}}'
+        vc.legal-person-credential.format: jwt_vc
+        vc.legal-person-credential.scope: LegalPersonCredential
+        vc.legal-person-credential.vct: LegalPersonCredential
+        vc.membership-credential.credential_signing_alg_values_supported: ES256
+        vc.membership-credential.credential_build_config.signing_algorithm: ES256
+        vc.membership-credential.credential_build_config.token_jws_type: JWT
+        vc.membership-credential.format: jwt_vc
+        vc.membership-credential.scope: MembershipCredential
+        vc.membership-credential.vct: MembershipCredential
+        vc.marketplace-credential.credential_signing_alg_values_supported: ES256
+        vc.marketplace-credential.credential_build_config.signing_algorithm: ES256
+        vc.marketplace-credential.credential_build_config.token_jws_type: JWT
+        vc.marketplace-credential.format: jwt_vc
+        vc.marketplace-credential.scope: MarketplaceCredential
+        vc.marketplace-credential.vct: MarketplaceCredential
+        vc.verifiable-credential.format: vc+sd-jwt
+        vc.verifiable-credential.scope: VerifiableCredential
+        vc.verifiable-credential.vct: VerifiableCredential
+        vc.operator-credential.credential_signing_alg_values_supported: ES256
+        vc.operator-credential.credential_build_config.signing_algorithm: ES256
+        vc.operator-credential.credential_build_config.token_jws_type: JWT
+        vc.operator-credential.credential_build_config.proof_types_supported: '{"jwt":{"proof_signing_alg_values_supported":["ES256"]}}'
+        vc.operator-credential.format: jwt_vc
+        vc.operator-credential.scope: OperatorCredential
+        vc.operator-credential.vct: OperatorCredential
+
+      clientRoles:
+        ${DID}:
+          - name: "admin"
+            description: admin role to be used when operating the provider.
+            clientRole: true
+          - name: customer
+            description: Is allowed to see offers etc.
+            clientRole: true
+          - name: READER
+            description: Is allowed to see offers etc.
+            clientRole: true
+          - name: OPERATOR
+            description: Is allowed to operate clusters.
+            clientRole: true
+          - name: REPRESENTATIVE
+            description: Is allowed to register.
+            clientRole: true
+        account:
+          - name: delete-account
+            description: '${role_delete-account}'
+            composite: false
+            clientRole: true
+            attributes: {}
+          - name: view-consent
+            description: '${role_view-consent}'
+            composite: false
+            clientRole: true
+            attributes: {}
+          - name: view-groups
+            description: '${role_view-groups}'
+            composite: false
+            clientRole: true
+            attributes: {}
+          - name: manage-account
+            description: '${role_manage-account}'
+            composite: true
+            composites:
+              client:
+                account: ["manage-account-links"]
+            clientRole: true
+            attributes: {}
+          - name: view-profile
+            description: '${role_view-profile}'
+            composite: false
+            clientRole: true
+            attributes: {}
+          - name: view-applications
+            description: '${role_view-applications}'
+            composite: false
+            clientRole: true
+            attributes: {}
+          - name: manage-consent
+            description: '${role_manage-consent}'
+            composite: true
+            composites:
+              client:
+                account: ["view-consent"]
+            clientRole: true
+            attributes: {}
+          - name: manage-account-links
+            description: '${role_manage-account-links}'
+            composite: false
+            clientRole: true
+            attributes: {}
+
+      users: *keycloakUsers
+
+      clientScopes:
+        - name: LegalPersonCredential
+          description: 'OIDC4VC Scope, that adds all properties required for a user.'
+          protocol: openid-connect
+          attributes:
+            include.in.token.scope: 'false'
+            display.on.consent.screen: 'false'
+          protocolMappers:
+            - name: context-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-context-mapper
+              config:
+                context: 'https://www.w3.org/2018/credentials/v1'
+                supportedCredentialTypes: >-
+                  VerifiableCredential,LegalPersonCredential,OperatorCredential,UserCredential
+            - name: email-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: email
+                userAttribute: email
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: firstName-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: firstName
+                userAttribute: firstName
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: subject-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: subject
+                staticValue: 'did:key:zDnaeiVpxCT7ARwqLndbWiCeGG2YZXvLfWFs1cGPgKUe8GPLe'
+                supportedCredentialTypes: LegalPersonCredential
+            - name: street-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: street
+                staticValue: Main Street
+                supportedCredentialTypes: LegalPersonCredential
+            - name: lastName-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: lastName
+                userAttribute: lastName
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential'
+            - name: role-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-target-role-mapper
+              config:
+                subjectProperty: roles
+                clientId: "${DID}"
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: role-mapper-marketplace
+              protocol: oid4vc
+              protocolMapper: oid4vc-target-role-mapper
+              config:
+                subjectProperty: roles
+                clientId: "${DID}"
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: streetNumber-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: streetNumber
+                staticValue: '10'
+                supportedCredentialTypes: LegalPersonCredential
+            - name: city-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: city
+                staticValue: Dresden
+                supportedCredentialTypes: LegalPersonCredential
+            - name: region-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: region
+                staticValue: Saxony
+                supportedCredentialTypes: LegalPersonCredential
+            - name: country-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: country
+                staticValue: Germany
+                supportedCredentialTypes: LegalPersonCredential
+            - name: zipcode-mapper
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: zipcode
+                staticValue: 01169
+                supportedCredentialTypes: LegalPersonCredential
+        - name: UserCredential
+          description: 'OIDC4VC Scope, that adds all properties required for a user.'
+          protocol: openid-connect
+          attributes: {}
+          protocolMappers:
+            - name: context-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-context-mapper
+              config:
+                context: 'https://www.w3.org/2018/credentials/v1'
+                supportedCredentialTypes: UserCredential
+            - name: email-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: email
+                userAttribute: email
+                supportedCredentialTypes: UserCredential
+            - name: firstName-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: firstName
+                userAttribute: firstName
+                supportedCredentialTypes: UserCredential
+            - name: subject-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: id
+                staticValue: "${DID}"
+                supportedCredentialTypes: UserCredential
+            - name: street-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: street
+                staticValue: Main Street
+                supportedCredentialTypes: UserCredential
+            - name: lastName-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: lastName
+                userAttribute: lastName
+                supportedCredentialTypes: UserCredential
+            - name: role-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-target-role-mapper
+              config:
+                subjectProperty: roles
+                clientId: "${DID}"
+                supportedCredentialTypes: UserCredential
+            - name: streetNumber-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: streetNumber
+                staticValue: '10'
+                supportedCredentialTypes: UserCredential
+            - name: city-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: city
+                staticValue: Dresden
+                supportedCredentialTypes: UserCredential
+            - name: region-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: region
+                staticValue: Saxony
+                supportedCredentialTypes: UserCredential
+            - name: country-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: country
+                staticValue: Germany
+                supportedCredentialTypes: UserCredential
+            - name: zipcode-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: zipcode
+                staticValue: 01169
+                supportedCredentialTypes: UserCredential
+        - name: OperatorCredential
+          description: 'OIDC4VC Scope, that adds all properties required for a user.'
+          protocol: openid-connect
+          attributes: {}
+          protocolMappers:
+            - name: context-mapper-oc
+              protocol: oid4vc
+              protocolMapper: oid4vc-context-mapper
+              config:
+                context: 'https://www.w3.org/2018/credentials/v1'
+                supportedCredentialTypes: >-
+                  VerifiableCredential,LegalPersonCredential,OperatorCredential,UserCredential
+            - name: email-mapper-oc
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: email
+                userAttribute: email
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: firstName-mapper-oc
+              protocol: oid4vc
+              protocolMapper: oid4vc-user-attribute-mapper
+              config:
+                subjectProperty: firstName
+                userAttribute: firstName
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: role-mapper-oc
+              protocol: oid4vc
+              protocolMapper: oid4vc-target-role-mapper
+              config:
+                subjectProperty: roles
+                clientId: "${DID}"
+                supportedCredentialTypes: 'LegalPersonCredential,OperatorCredential,UserCredential'
+            - name: subject-mapper-uc
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: subject
+                clientId: "${DID}"
+                supportedCredentialTypes: UserCredential
+        - name: MarketplaceCredential
+          description: Scope to produce a credential intended for m2m-access as a marketplace.
+          protocol: openid-connect
+          attributes: {}
+          protocolMappers:
+            - name: context-mapper-oc
+              protocol: oid4vc
+              protocolMapper: oid4vc-context-mapper
+              config:
+                context: 'https://www.w3.org/2018/credentials/v1'
+                supportedCredentialTypes: MarketplaceCredential
+        - name: MembershipCredential
+          description: Scope to produce a credential intended for m2m-access as a marketplace.
+          protocol: openid-connect
+          attributes: {}
+          protocolMappers:
+            - name: context-mapper-mc
+              protocol: oid4vc
+              protocolMapper: oid4vc-context-mapper
+              config:
+                context: 'https://www.w3.org/2018/credentials/v1'
+                supportedCredentialTypes: MembershipCredential
+            - name: subject-mapper-mc-id
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: id
+                staticValue: "${DID}"
+                supportedCredentialTypes: MembershipCredential
+            - name: subject-mapper-mc-type
+              protocol: oid4vc
+              protocolMapper: oid4vc-static-claim-mapper
+              config:
+                subjectProperty: membershipType
+                staticValue: FullMember
+                supportedCredentialTypes: MembershipCredential
+
+      clients:
+        - clientId: "${DID}"
+          enabled: true
+          description: Client to connect internal operations services
+          surrogateAuthRequired: false
+          alwaysDisplayInConsole: false
+          clientAuthenticatorType: client-secret
+          defaultRoles: []
+          redirectUris: []
+          webOrigins: []
+          notBefore: 0
+          bearerOnly: false
+          consentRequired: false
+          standardFlowEnabled: true
+          implicitFlowEnabled: false
+          directAccessGrantsEnabled: false
+          serviceAccountsEnabled: false
+          publicClient: false
+          frontchannelLogout: false
+          protocol: openid-connect
+          attributes:
+            client.secret.creation.time: "1675260539"
+          protocolMappers: []
+          authenticationFlowBindingOverrides: {}
+          fullScopeAllowed: true
+          nodeReRegistrationTimeout: -1
+          defaultClientScopes: []
+          optionalClientScopes: []
+
+  ## configuration of the tm-forum-api - see https://github.com/FIWARE/helm-charts/tree/main/charts/tm-forum-api for details
+  tm-forum-api:
+    enabled: true
+    fullnameOverride: "tm-forum-api"
+
+    # Note: the dsc overrides the tmf defaults, removing some components...
+    apis:
+      - name: party-catalog
+        image: tmforum-party-catalog
+        basePath: /tmf-api/party/v4
+
+      - name: customer-bill-management
+        image: tmforum-customer-bill-management
+        basePath: /tmf-api/customerBillManagement/v4
+
+      - name: customer-management
+        image: tmforum-customer-management
+        basePath: /tmf-api/customerManagement/v4
+
+      - name: product-catalog
+        image: tmforum-product-catalog
+        basePath: /tmf-api/productCatalogManagement/v4
+
+      - name: product-inventory
+        image: tmforum-product-inventory
+        basePath: /tmf-api/productInventory/v4
+
+      - name: product-ordering-management
+        image: tmforum-product-ordering-management
+        basePath: /tmf-api/productOrderingManagement/v4
+
+      - name: resource-catalog
+        image: tmforum-resource-catalog
+        basePath: /tmf-api/resourceCatalog/v4
+
+      - name: resource-function-activation
+        image: tmforum-resource-function-activation
+        basePath: /tmf-api/resourceFunctionActivation/v4
+
+      - name: resource-inventory
+        image: tmforum-resource-inventory
+        basePath: /tmf-api/resourceInventoryManagement/v4
+
+      - name: service-catalog
+        image: tmforum-service-catalog
+        basePath: /tmf-api/serviceCatalogManagement/v4
+
+      - name: service-inventory
+        image: tmforum-service-inventory
+        basePath: /tmf-api/serviceInventory/v4
+
+      - name: account-management
+        image: tmforum-account
+        basePath: /tmf-api/accountManagement/v4
+
+      - name: agreement-management
+        image: tmforum-agreement
+        basePath: /tmf-api/agreementManagement/v4
+
+      - name: party-role
+        image: tmforum-party-role
+        basePath: /tmf-api/partyRoleManagement/v4
+
+      - name: usage-management
+        image: tmforum-usage-management
+        basePath: /tmf-api/usageManagement/v4
+
+      - name: quote
+        image: tmforum-quote
+        basePath: /tmf-api/quote/v4
+
+      - name: resource-order-management
+        image: tmforum-resource-order-management
+        basePath: /tmf-api/resourceOrderingManagement/v4
+
+      - name: service-ordering-management
+        image: tmforum-service-order-management
+        basePath: /tmf-api/serviceOrdering/v4
+
+      - name: software-management
+        image: tmforum-software-management
+        basePath: /tmf-api/softwareCompute/v4
+
+    # -- All TM Forum APIs in a single deployment, using the all-in-one image. This is recommended for testing and development, but not for production use. When set to false, every API will be deployed separately, allowing for more flexibility and scalability.
+    allInOne:
+      enabled: true
+
+    # redis caching
+    redis:
+      enabled: false
+
+    ingress:
+      enabled: false
+      className: *ingressClass
+      annotations: *ingressAnnotations
+      hosts:
+        - host: *tmfHost
+          paths: ["/"]
+      tls:
+        - secretName: tmforum-tls
+          hosts:
+            - *tmfHost
+
+    ## configuration to be used by every api-deployment if nothing specific is provided.
+    defaultConfig:
+      # contextUrl: "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
+      contextUrl: "https://raw.githubusercontent.com/SEAMWARE/fdsc-edc/refs/heads/main/schemas/odrl-context.jsonld"
+      # -- configuration for proemtheus metrics
+      prometheus:
+        enabled: false
+      # --  ngsi-ld broker connection information
+      ngsiLd:
+        url: *dssUrl
+        # Note: the pod stopped crying with this (the default is 'ngsi-ld/v1')
+        path: "/ngsi-ld/v1"
+
+      serverHost: *tmfUrl # Note: this sets `GENERAL_SERVER_HOST`
+
+      # logLevel: TRACE
+      logLevel: INFO
+
+      additionalEnvVars:
+        - name: API_EXTENSION_ENABLED
+          value: "true"
+        - name: GENERAL_NGSILDORQUERYVALUE
+          value: ","
+        - name: GENERAL_NGSILDORQUERYKEY
+          value: ","
+        - name: GENERAL_ENCLOSEQUERY
+          value: "false"
+        # = BUG ============================================================== #
+        # If this value is not explicitly set, it resolves to `null` (even     #
+        # though the source code defaults it to "/"). This breaks callback     #
+        # URLs used for subscriptions with `data-service-scorpio`, producing   #
+        # malformed endpoints like:                                            #
+        #                                                                      #
+        #   `http://tm-forum-api-svc:8080null/callback`                        #
+        #                                                                      #
+        # Relevant code:                                                       #
+        #                                                                      #
+        # ```java                                                              #
+        # // file: common/src/.../rest/AbstractSubscriptionApiController.java  #
+        # private URI getCallbackURI() {                                       #
+        #     return URI.create(                                               #
+        #         generalProperties.getServerHost() // GENERAL_SERVER_HOST     #
+        #       + generalProperties.getBasepath()   // GENERAL_BASEPATH (null) #
+        #       + EventConstants.SUBSCRIPTION_CALLBACK_PATH // "/callback"     #
+        #     );                                                               #
+        # }                                                                    #
+        # ```                                                                  #
+        # ==================================================================== #
+        - name: GENERAL_BASEPATH
+          value: "/"
+
+    registration:
+      enabled: false # Note: disabled for now, maybe?
+      # -- name to be used for the registration jobs
+      name: tmf-api-registration
+      annotations: *hookAnnotations
+      image:
+        repository: curlimages/curl
+        tag: 8.20.0
+      command: [ /bin/sh, -c, /bin/init.sh ]
+      # -- configuration to register the dataplane at the credentials-config-service
+      ccs:
+        <<: *ccsSetup
+        id: tmf-api
+
+    # enable the api proxy
+    apiProxy:
+      enabled: false # Note: I think we don't need this, allInOne is enabled...
+
+  ## configuration of rainbow to provide integration with the Dataspace Protocol
+  rainbow:
+    enabled: false
+
+  ## configuration of the tm-forum-api - see https://github.com/FIWARE/helm-charts/tree/main/charts/contract-management for details
+  contract-management:
+    enabled: false
+    fullnameOverride: "contract-management"
+
+    notification:
+      enabled: true
+      host: contract-management
+
+    ## Enables integration with the (local) ODRL-PAP. http.services.odrl needs to be configured towards the ODRL-PAP.
+    enableOdrlPap: true
+    ## Enables integration with the (local) Trusted Issuers List. http.services.trusted-issuers-list needs to be configured towards the Trusted Issuers List.
+    enableTrustedIssuersList: true
+    ## Enables integration with the TMForum API.
+    enableTmForum: true
+    ## Requires TMForum integration to be enabled and the http.service.rainbow properly configured
+    enableRainbow: false
+    ## Enable integration with a central marketplace. Requires OdrlPap and TrustedIssuersList integration to be enabled.
+    enableCentralMarketplace: true
+
+    additionalEnvVars:
+      - name: LOGGER_LEVELS_ROOT
+        # value: TRACE
+        value: INFO
+
+    # = Note ================================================================= #
+    # Because the DID is only known after deploy we need to generate a new     #
+    # `/application.yaml` after the DID generation and hook it to the pod.     #
+    # ======================================================================== #
+    did: __DID__
+
+    deployment:
+      initContainers:
+        - name: render-config
+          image: *alpineImage
+          command: ["/bin/sh", "-euc"]
+          args:
+            - |
+              sed "s/__DID__/${DID}/" /original/application.yaml \
+                | tee /generated/application.yaml
+          env:
+            - *didEnv
+          volumeMounts:
+            - name: application-yaml
+              mountPath: /original
+            - name: generated-config
+              mountPath: /generated
+        # Note: Wait of KC & generate the JWT tokens
+        - name: wait-for-keycloak
+          image: curlimages/curl:8.6.0
+          command: ["/bin/sh", "-euc"]
+          args:
+            - |
+              echo "Waiting for Keycloak to become ready..."
+
+              until curl -sf "$KC_HEALTH" > /dev/null; do
+                echo "Keycloak not ready yet, retrying..."
+                sleep 5
+              done
+              echo "Keycloak is ready."
+          env:
+            - name: KC_HEALTH
+              value: *kcHealthUrl
+        - name: get-credential
+          image: *curlImage
+          command: ["/bin/sh", "-c"]
+          args:
+            - /bin/get-credential.sh /credential-repo
+          volumeMounts:
+            - name: credentials-script
+              mountPath: /bin/get-credential.sh
+              subPath: get-credential.sh
+            - name: credential-repo
+              mountPath: /credential-repo
+
+      additionalVolumes:
+        - name: generated-config
+          emptyDir: {}
+        - name: signing-key
+          secret:
+            secretName: *didSecret
+            items:
+              - key: private-key.pem
+                path: private-key.pem
+        # Note: Used to generate JWT tokens
+        - name: credentials-script
+          configMap:
+            name: credentials-script
+            defaultMode: 0755
+        - name: credential-repo
+          emptyDir: {}
+
+      additionalVolumeMounts:
+        - name: generated-config
+          mountPath: /application-custom.yaml
+          subPath: application.yaml
+        - name: signing-key
+          mountPath: /cert
+        - name: credential-repo
+          mountPath: /credential-repo
+
+    # TODO: check if this works
+    # Note: no idea what this is but if it works don't touch it d(^u^d )
+    ## configures the m2m authentication via oid4vp
+    oid4vp:
+      enabled: true
+      ## Identity of the credentials holder
+      holder:
+        ## ID of the holder
+        holderId: __DID__
+        ## Type of the key to be used for signing verifiable presentations as the holder
+        keyType: EC
+        ## Path that the signing key can be read from
+        keyPath: /cert/private-key.pem
+        ## Algorithm to be used for signing the presentations. Needs to work with the key
+        # signatureAlgorithm: ES256 # Note: not supported
+        signatureAlgorithm: ECDH-ES
+      ## folder containing the credentials to be read
+      credentialsFolder: /credential-repo
+      ## trust anchors to be used in addition to the system trust store
+      trustAnchors: []
+
+    ## Organization configuration
+    organization:
+      ## Provider-side configuration
+      provider:
+        ## Role of the organization acting as provider (e.g. seller)
+        role: seller
+
+    # Note: I don't know why is everywhere enabled by default... (._. )
+    # -- configuration for proemtheus metrics
+    prometheus:
+      enabled: false
+
+    til:
+      # TODO: check if this is correct...
+      credentialType: OperatorCredential
+    services:
+      trusted-issuers-list:
+        url: *tilUrl
+      product-order:
+        url: *tmfUrl
+      party:
+        url: *tmfUrl
+      product-catalog:
+        url: *tmfUrl
+      service-catalog:
+        url: *tmfUrl
+      tmforum-agreement-api:
+        url: *tmfUrl
+      quote:
+        url: *tmfUrl
+      odrl:
+        url: *papUrl
+
+  # -- configuration for the did-helper, see https://github.com/wistefan/did-helper
+  did:
+    enabled: false
+
+  # -- configuration for registering a participant at the til. Allows to preconfigure trust-relationships on deployment
+  registration:
+    enabled: true
+    configMap: til-registration
+    image:
+      repository: quay.io/curl/curl
+      tag: 8.1.2
+
+    # Note: this is doesn't do anything for now, it's not setup on their end
+    annotations: *hookAnnotations
+
+    command: [ /bin/sh, -euc, /bin/init.sh ]
+    extraEnvVars:
+      - *didEnv
+
+    til: *tilUrl
+    issuer:
+      - did: ${DID}
+        credentialTypes:
+          - LegalPersonCredential
+          - UserCredential
+          - MembershipCredential
+
+  # -- configuration for the .well-known/data-space-configuration endpoint document
+  dataSpaceConfig:
+    enabled: false # Note: is just a meta info endpoint for the deployed ds
+    serviceType: ClusterIP
+    port: 3002
+    supportedModels: # Note: don't really know what this is for... ( o-o)b
+      - "https://raw.githubusercontent.com/smart-data-models/dataModel.Consumption/master/ConsumptionPoint/schema.json"
+      - "https://raw.githubusercontent.com/smart-data-models/dataModel.Consumption/master/ConsumptionCost/schema.json"
+    supportedProtocols:
+      - http
+      - https
+    authenticationProtocols:
+      - oid4vp
+
+  ## Installation of the mongo-operator - see https://github.com/mongodb/helm-charts/tree/main/charts/community-operator
+  mongo-operator:
+    enabled: false
+
+  # Note: config taken from:
+  #       > https://github.com/FIWARE/data-space-connector/blob/main/k3s/provider.yaml
+  ## Usage of the mongo-operator - see https://github.com/mongodb/mongodb-kubernetes-operator
+  managedMongo:
+    enabled: true
+    spec:
+      # additionalMongodConfig:
+      #   storage.wiredTiger.engineConfig.journalCompressor: zlib
+      statefulSet:
+        spec:
+          template:
+            spec:
+              # Note: Hostpath volumes are owned by root but MongoDB containers
+              #       run as non root so we use an init container to change the
+              #       owner of the directory (init containers run as root)
+              initContainers:
+                - name: change-dir-permissions
+                  image: busybox
+                  command: ["chown", "-R", "2000", "/data"]
+                  volumeMounts:
+                    - mountPath: /data
+                      name: data-volume
+                  securityContext:
+                    runAsNonRoot: false
+                    runAsUser: 0
+                    runAsGroup: 0
+                - name: mongodb-agent-readinessprobe
+                  resources: &mongoResources
+                    limits:
+                      cpu: "0.2"
+                      memory: 200M
+                    requests:
+                      cpu: "0.1"
+                      memory: 100M
+              containers:
+                - name: mongod
+                  resources: *mongoResources
+                - name: mongodb-agent
+                  resources: *mongoResources
+          volumeClaimTemplates:
+            - metadata:
+                name: data-volume
+              spec: &mongoVolumeSpec
+                accessModes:
+                  - ReadWriteOnce
+                storageClassName: *storageClass
+                resources:
+                  requests:
+                    storage: "1Gi"
+            - metadata:
+                name: logs-volume
+              spec: *mongoVolumeSpec
+
+  # -- configuration for the marketplace components (https://github.com/FIWARE/helm-charts/tree/main/charts/business-api-ecosystem)
+  marketplace:
+    enabled: true
+    fullnameOverride: "marketplace"
+
+    externalUrl: *mpUrl
+
+    # -- should random passwords for the database connection of marketplace components be generated in the cluster.
+    # When `true` (and on `helm install` only) the chart creates `mongodb-admin-password`, `mongodb-charging-password`
+    # and `mongodb-belp-password` Secrets with random values. The Secrets are annotated with
+    # `helm.sh/resource-policy: keep` so they survive `helm upgrade` and `helm uninstall` and the passwords are
+    # never rotated by Helm. This is convenient for local/demo deployments but NOT recommended for production:
+    # since the Secrets are annotated as kept, Helm will not adopt or update them, and re-installs may collide
+    # with stale Secrets. For production, set this to `false` and provide the three Secrets externally
+    # (e.g. via External Secrets Operator, Sealed Secrets, SOPS, or an out-of-band `kubectl apply`).
+    generatePasswords: true
+
+    # = Note ================================================================= #
+    # This component allegedly does the same thing as `tm-forum-api`, so we    #
+    # don't really need it.                                                    #
+    # = Bug ================================================================== #
+    # This component expects a `mysql` DB to be deployed, but for some reason  #
+    # the umbrella chart doesn't do that, so we would need to patch it if we   #
+    # wanted to use it.  (._.')                                                #
+    # ======================================================================== #
+    # -- should the tmforum deployed together with the marketplace?
+    bizEcosystemApis:
+      enabled: false
+
+      # = Note =============================================================== #
+      # DON'T DELETE THIS. Even thought this component is disabled, the        #
+      # `bizEcosystem` components will use this definitions to target the      #
+      # deployed `tm-forum-api`.                                               #
+      # = Bug ================================================================ #
+      # The init containers of the `bizEcosystem` will use the `fullname` +    #
+      # `service.port`, So this needs to match the `tm-forum-api`              #
+      # configuration... q(-_- )                                               #
+      # ====================================================================== #
+      fullnameOverride: &tmfService tm-forum-api-svc
+      service:
+        port: &tmfPort 8080
+
+      tmForum:
+        catalog:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/productCatalogManagement/v4
+        inventory:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/productInventory/v4
+        ordering:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/productOrderingManagement/v4
+        billing:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/accountManagement/v4
+        usage:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/usageManagement/v4
+        party:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/party/v4
+        customer:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/customerManagement/v4
+        resources:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/resourceCatalog/v4
+        services:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/serviceCatalogManagement/v4
+        resourceInventory:
+          host: *tmfService
+          port: *tmfPort
+          path: /tmf-api/resourceInventoryManagement/v4
+
+    # -- should RSS be enabled?
+    bizEcosystemRss:
+      enabled: false # Note: not neeeded
+
+    # -- should vc based auth enabled?
+    siop:
+      # Note: we set this false, and mount the envs from a generated cm :)
+      enabled: false
+      # Note: this will throw a warn, but we need to override with DID:
+      #         hides previous definition of "BAE_LP_SIOP_CLIENT_ID"
+      clientId: ""
+      # -- should the market place automatically registered in the credentials config service?
+      ccs:
+        enabled: false
+      # -- paths to the verifier
+      verifier:
+        host: *verifierUrl
+        qrCodePath: /api/v2/loginQR
+        tokenPath: /token
+        jwksPath: /.well-known/jwks
+      # -- roles allowed by the market
+      allowedRoles:
+        - seller
+        - customer
+        - admin
+        - REPRESENTATIVE
+        - READER
+        - OPERATOR
+
+    # -- configuration for the charging backend
+    bizEcosystemChargingBackend:
+      enabled: true
+      fullnameOverride: "biz-ecosystem-charging-backend"
+
+      extraEnvVars:
+        - name: BAE_CB_CUSTOMER_BILL
+          value: "http://tm-forum-api-svc:8080/tmf-api/customerBillManagement/v4"
+
+      existingSecret: mongodb-charging-password
+
+      # -- max size to be used for the market
+      maxUploadSize: "5242880"
+
+      serviceAccount:
+        create: false
+
+      # -- configuration of the charging backend to be deployed
+      deployment:
+        image:
+          tag: 11.3.1
+
+      # -- should plugin support be enabled
+      plugins:
+        enabled: false
+
+      media:
+        enabled: true
+        size: 8Gi
+
+      port: 8006
+
+      # loglevel: info
+      loglevel: debug
+
+      payment:
+        method: None
+
+      backup:
+        enabled: false
+
+      initContainers: false # Note: Tried my best to make them work sorry...
+      propagateToken: true
+      basePath: /opt/business-ecosystem-charging-backend
+      token:
+        enabled: false
+
+      db:
+        host: mongodb-svc
+        database: charging_db
+        user: charging
+        secretKey: password
+
+    # oauth: # TODO???
+    #   provider: "vc"
+
+    # -- configuration for the logic proxy
+    bizEcosystemLogicProxy:
+      enabled: true
+      fullnameOverride: "biz-ecosystem-logic-proxy"
+
+      statefulset:
+        image:
+          tag: 11.11.1
+
+      serviceAccount:
+        create: true
+
+      ingress:
+        enabled: true
+        className: *ingressClass
+        annotations:
+          <<: *ingressAnnotations
+          cert-manager.io/common-name: *mpHost
+        hosts:
+          - host: *mpHost
+            paths: ["/"]
+        tls:
+          - secretName: marketplace-tls
+            hosts:
+              - *mpHost
+
+      additionalEnvVars:
+        - name: BAE_LP_SIOP_IS_REDIRECTION
+          value: "true"
+        - name: BAE_LP_PURCHASE_ENABLED
+          value: "true"
+        - name: NODE_TLS_REJECT_UNAUTHORIZED
+          value: "0"
+        # Note: fun block of manually mounted envs incoming
+        - name: BAE_LP_SIOP_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_ENABLED
+        # - name: BAE_LP_SIOP_CLIENT_ID
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: bae-cm
+        #       key: BAE_LP_SIOP_CLIENT_ID
+        - name: BAE_LP_SIOP_VERIFIER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_VERIFIER_HOST
+        - name: BAE_LP_SIOP_VERIFIER_QRCODE_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_VERIFIER_QRCODE_PATH
+        - name: BAE_LP_SIOP_VERIFIER_TOKEN_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_VERIFIER_TOKEN_PATH
+        - name: BAE_LP_SIOP_VERIFIER_JWKS_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_VERIFIER_JWKS_PATH
+        - name: BAE_LP_SIOP_CALLBACK_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_CALLBACK_PATH
+        - name: BAE_LP_SIOP_ALLOWED_ROLES
+          valueFrom:
+            configMapKeyRef:
+              name: bae-cm
+              key: BAE_LP_SIOP_ALLOWED_ROLES
+        - <<: *didEnv
+          name: BAE_LP_SIOP_CLIENT_ID
+        - name: BAE_LP_SIOP_PRIVATE_KEY_PEM
+          value: /certs-did/private-key.pem
+        - name: DATASPACE_ENABLED
+          value: "true"
+      extraVolumeMounts:
+        - name: did-priv-key
+          mountPath: /certs-did
+      extraContainerVolumes:
+        - name: did-priv-key
+          secret:
+            secretName: *didSecret
+
+      existingSecret: mongodb-belp-password
+
+      # -- image to be used for the statefulset
+      statefulset:
+        image:
+          repository: fiware/biz-ecosystem-logic-proxy
+          tag: "11.15.0"
+          pullPolicy: IfNotPresent
+
+      port: 8004
+      nodeEnvironment: production
+
+      # -- db config
+      db:
+        host: mongodb-svc
+        database: belp_db
+        user: belp
+        secretKey: password
+
+      basePath: /opt/business-ecosystem-logic-proxy
+
+      externalIdp:
+        enabled: true
+      initContainers: false # Note: Tried my best to make them work sorry...
+      propagateToken: true
+
+  # -- Eclipse Dataspace Components extensions for FIWARE ecosystem integration (https://github.com/FIWARE/helm-charts/tree/main/charts/fdsc-edc)
+  fdsc-edc:
+    enabled: false
+
+  # Note: generates a Token from Keycloak, for the love of the game ( []-[])b
+  #       Helper script to retrieve credentials for applications.
+  # -- helper script to retrieve credentials for applications
+  credentials:
+    enabled: false
+    keycloak:
+      address: http://keycloak:8080
+      realm: *kcRealm
+      clientId: account-console
+      username: *kcDeviceUser
+      scope: openid
+      password: *kcDevicePassword
+    configurations:
+      - id: marketplace-credential
+        format: jwt_vc
+        targetFile: marketplace-credential.jwt
+      - id: membership-credential
+        format: jwt_vc
+        targetFile: membership-credential.jwt
+      - id: legal-person-credential
+        format: jwt_vc
+        targetFile: legal-person-credential.jwt
+
+  # Note: bridge for "Eclipse EDC"
+  identityhub:
+    enabled: false
+
+  # -- Secure, store, and tightly control access to sensitive data (https://github.com/hashicorp/vault-helm)
+  vault:
+    enabled: false
+
+  # -- configuration for the cert-manager component (https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml)
+  cert-manager:
+    enabled: false
+
+  # -- configuration for additional resources to be deployed for cert-manager, like ClusterIssuers
+  certManagerResources:
+    enabled: false
+
+  # -- list of extra Kubernetes manifests to deploy alongside the chart.
+  # Each entry can be a string (raw YAML, supports Helm templating) or an object.
+  extraManifests: []
+
+  # -- dashboard for operating the FIWARE Data Space Connector
+  fdsc-dashboard:
+    enabled: false

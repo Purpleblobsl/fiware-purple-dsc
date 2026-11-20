@@ -1,0 +1,33 @@
+# Chart files
+/Chart.lock
+/charts
+/output.yaml
+/values.*.yaml
+/values/values.*.yaml
+!/values.example.yaml
+!/values/values.template.yaml
+!/values/values.template-central-marketplace.yaml
+/.env
+/.env.*
+/values/.env.*
+!/.env.example
+!/values/.env.template
+
+# Trash
+.Trash-*
+.DS_Store
+
+# Common backup files
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+
+# Various IDEs
+.project
+.idea/
+*.tmproj
+.vscode/
+.idea_modules
+.idea

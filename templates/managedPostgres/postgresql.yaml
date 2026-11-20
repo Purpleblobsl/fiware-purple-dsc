@@ -1,0 +1,10 @@
+# src: https://github.com/FIWARE/vc-authentication/blob/vc-authentication-1.1.4/charts/vc-authentication/templates/postgres.yaml
+{{- if .Values.managedPostgres.enabled }}
+apiVersion: "acid.zalan.do/v1"
+kind: postgresql
+metadata:
+  name: postgres
+  namespace: {{ $.Release.Namespace | quote }}
+spec:
+{{- toYaml .Values.managedPostgres.config | nindent 2 }}
+{{- end }}

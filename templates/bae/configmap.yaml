@@ -1,0 +1,22 @@
+{{- if .Values.bae.enabled }}
+{{- with .Values.dsc.marketplace }}
+{{- if not .siop.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bae-cm
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+data:
+  BAE_LP_SIOP_ENABLED: "true"
+  BAE_LP_SIOP_CLIENT_ID: {{ .siop.clientId | quote }}
+  BAE_LP_SIOP_VERIFIER_HOST: {{ .siop.verifier.host | quote }}
+  BAE_LP_SIOP_VERIFIER_QRCODE_PATH: {{ .siop.verifier.qrCodePath | quote }}
+  BAE_LP_SIOP_VERIFIER_TOKEN_PATH: {{ .siop.verifier.tokenPath | quote }}
+  BAE_LP_SIOP_VERIFIER_JWKS_PATH: {{ .siop.verifier.jwksPath | quote }}
+  BAE_LP_SIOP_CALLBACK_PATH: {{ .externalUrl }}{{ .siop.callbackPath }}
+  BAE_LP_SIOP_ALLOWED_ROLES: {{ join "," .siop.allowedRoles }}
+{{- end }}
+{{- end }}
+{{- end }}

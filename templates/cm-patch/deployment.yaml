@@ -1,0 +1,134 @@
+{{- with .Values.cmPatch }}{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cm-patch
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+    app: cm-patch
+spec:
+  replicas: {{ .replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "purple-dsc.selectorLabels" $ | nindent 6 }}
+      app: cm-patch
+  template:
+    metadata:
+      {{- with .podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "purple-dsc.labels" $ | nindent 8 }}
+        {{- with .podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app: cm-patch
+    spec:
+      containers:
+        - name: cm-patch
+          {{- with .securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .image.repository }}:{{ .image.tag }}"
+          imagePullPolicy: {{ .image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .service.port }}
+              protocol: TCP
+          {{- with .livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          env:
+            {{- with .credentials.keycloak }}
+            #* keycloak
+            - name: KC_URL
+              value: {{ .address | quote }}
+            - name: KC_REALM
+              value: {{ .realm | quote }}
+            - name: KC_CLIENT_ID
+              value: {{ .clientId | quote }}
+            - name: KC_SCOPE
+              value: {{ .scope | quote }}
+            - name: KC_USER
+              value: {{ .username | quote }}
+            - name: KC_PASS
+              value: {{ .password | quote }}
+            {{- end }}
+
+            {{- with .credentials.configurations }}
+              {{- $ids := list }}
+              {{- $formats := list }}
+              {{- $scopes := list }}
+
+              {{- range . }}
+                {{- $ids = append $ids .id }}
+                {{- $formats = append $formats .format }}
+                {{- $scopes = append $scopes .scope }}
+              {{- end }}
+
+            #* VC & JWT
+            - name: VC_CONFIG_IDS
+              value: {{ join "," $ids | quote }}
+            - name: VC_CONFIG_FORMATS
+              value: {{ join "," $formats | quote }}
+            - name: VC_CONFIG_SCOPES
+              value: {{ join "," $scopes | quote }}
+            {{- end }}
+
+            #* app & holder & tmf
+
+            {{ with .extraEnvs }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          volumeMounts:
+            {{- with .extraVolumeMounts }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- if .extraInitContainers }}
+      initContainers:
+        {{- toYaml .extraInitContainers | nindent 8 }}
+      {{- end }}
+
+      volumes:
+        {{- with .extraVolumes }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+      {{- if or .registrySecret.auths .registrySecret.existingSecret }}
+      imagePullSecrets:
+        - name: {{ .registrySecret.existingSecret | default .registrySecret.name }}
+      {{- end }}
+
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}{{- end }}
+

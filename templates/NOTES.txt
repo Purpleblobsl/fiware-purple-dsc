@@ -1,0 +1,94 @@
+Deployed Components
+-------------------
+
+{{ with .Values -}}
+# custom patches
+did: {{ index . "did" "enabled" }}
+bae: {{ index . "bae" "enabled" }}
+managedPostgres: {{ index . "managedPostgres" "enabled" }}
+cmPatch: {{ index . "cmPatch" "enabled" }}
+jobs: {{ index . "jobs" "enabled" }}
+
+# fiware data space connector
+{{- with index . "dsc" }}
+dsc: {{ .enabled }}
+  {{- if .enabled }}
+  {{- with index . "decentralizedIam" }}
++ decentralizedIam: {{ .enabled }}
+    {{- if .enabled }}
+    {{- with index . "vcAuthentication"}}
+| + vcAuthentication: {{ .enabled }}
+      {{- if .enabled }}
+| | | postgres-operator: {{ index . "postgres-operator" "enabled" }}
+| | | managedPostgres: {{ index . "managedPostgres" "enabled" }}
+| | | trusted-issuers-list: {{ index . "trusted-issuers-list" "enabled" }}
+| | | credentials-config-service: {{ index . "credentials-config-service" "enabled" }}
+| | | vcverifier: {{ index . "vcverifier" "enabled" }}
+| | ' dss: {{ index . "dss" "enabled" }}
+      {{- end }}
+    {{- end }}
+| |
+    {{- with index . "odrlAuthorization" }}
+| + odrlAuthorization: {{ .enabled }}
+      {{- if .enabled }}
+|   | apisix: {{ index . "apisix" "enabled" }}
+|   | odrl-pap: {{ index . "odrl-pap" "enabled" }}
+|   | opa: {{ index . "opa" "enabled" }}
+|   ' tpp: {{ index . "tpp" "enabled" }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+|
+  {{- with index . "tm-forum-api" }}
++ tm-forum-api: {{ .enabled }}
+    {{- if .enabled }}
+| | allInOne: {{ index . "allInOne" "enabled" }}
+| | apiProxy: {{ index . "apiProxy" "enabled" }}
+| ' redis: {{ index . "redis" "enabled" }}
+    {{- end }}
+  {{- end }}
+|
+  {{- with index . "marketplace" }}
++ marketplace: {{ .enabled }}
+    {{- if .enabled }}
+| | bizEcosystemApis: {{ index . "bizEcosystemApis" "enabled" }}
+| | bizEcosystemChargingBackend: {{ index . "bizEcosystemChargingBackend" "enabled" }}
+| | bizEcosystemLogicProxy: {{ index . "bizEcosystemLogicProxy" "enabled" }}
+| | bizEcosystemRss: {{ index . "bizEcosystemRss" "enabled" }}
+| ' siop: {{ index . "siop" "enabled" }}
+    {{- end }}
+  {{- end }}
+|
+| # stuff
+| did: {{ index . "did" "enabled" }}
+| dataSpaceConfig: {{ index . "dataSpaceConfig" "enabled" }}
+| keycloak: {{ index . "keycloak" "enabled" }}
+| scorpio: {{ index . "scorpio" "enabled" }}
+| contract-management: {{ index . "contract-management" "enabled" }}
+| vault: {{ index . "vault" "enabled" }}
+|
+| # data bases
+| mongo-operator: {{ index . "mongo-operator" "enabled" }}
+| managedMongo: {{ index . "managedMongo" "enabled" }}
+| cert-manager: {{ index . "cert-manager" "enabled" }}
+| certManagerResources: {{ index . "certManagerResources" "enabled" }}
+|
+| # adapters for other data space connectors
+| fdsc-edc: {{ index . "fdsc-edc" "enabled" }}
+| fdsc-dashboard: {{ index . "fdsc-dashboard" "enabled" }}
+| identityhub: {{ index . "identityhub" "enabled" }}
+| elsi: {{ index . "elsi" "enabled" }}
+' rainbow: {{ index . "rainbow" "enabled" }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+Jorge, quotes
+-------------
+
+- "Progress and Harmony for Mankind."
+- "Yo no lo voy a hacer, haz tú eso si quieres."
+- "Si funciona no lo toques."
+- "No es mi problema."
+- "LGTM."

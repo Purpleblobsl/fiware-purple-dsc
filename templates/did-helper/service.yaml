@@ -1,0 +1,18 @@
+{{- with .Values.did }}{{- if .enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: did-helper
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .server.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "purple-dsc.selectorLabels" $ | nindent 4 }}
+{{- end }}{{- end }}

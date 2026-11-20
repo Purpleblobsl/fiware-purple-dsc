@@ -1,0 +1,167 @@
+{{- if .Values.did.enabled }}
+{{- $existing := lookup "v1" "Secret" $.Release.Namespace .Values.did.secretName -}}
+{{- if not $existing }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-did-helper-job
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: role-did-helper-job
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rb-did-helper-job
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: sa-did-helper-job
+  namespace: {{ $.Release.Namespace | quote }}
+roleRef:
+  kind: Role
+  name: role-did-helper-job
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- with .Values.did }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: did-helper-job
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "purple-dsc.labels" $ | nindent 4 }}
+  {{- with .job.annotations }}
+  annotations:
+    {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      {{- with .imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      serviceAccountName: sa-did-helper-job
+      restartPolicy: Never
+
+      containers:
+        - name: did-helper
+          image: "{{ .job.repository }}:{{ .job.tag }}"
+          imagePullPolicy: {{ .job.pullPolicy }}
+
+          env:
+            - name: SECRET_NAME
+              value: {{ .secretName | quote }}
+            - name: RUN_SERVER
+              value: "false"
+            - name: OUTPUT_FORMAT
+              value: "env"
+            - name: OUTPUT_FILE
+              value: "/cert/did.env"
+            - name: DID_TYPE
+              value: key
+            - name: KEY_TYPE_TO_GENERATE
+              value: EC
+            {{- if and .config.server.keystorePasswordSecretName .config.server.keystorePasswordSecretKey }}
+            - name: STORE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .config.server.keystorePasswordSecretName }}
+                  key: {{ .config.server.keystorePasswordSecretKey }}
+            {{- end }}
+
+            {{- range $key, $value := omit .config.server "keystorePasswordSecretName" "keystorePasswordSecretKey"}}
+            - name: {{ $key | snakecase | upper }}
+              valueFrom:
+                configMapKeyRef:
+                  name: did-helper-cm
+                  key: {{ $key }}
+            {{- end }}
+            {{- range $key, $value := omit .config.generateKey "enabled" }}
+            - name: {{ $key | snakecase | upper }}
+              valueFrom:
+                configMapKeyRef:
+                  name: did-helper-cm
+                  key: {{ $key }}
+            {{- end }}
+
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -eu
+
+              TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+              CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+              URL="https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets"
+ 
+              echo "[job]: Installing curl..."
+              apk add --no-cache curl
+
+              echo "[job]: Checking if secret '$SECRET_NAME' already exists..."
+
+              if curl -sfL --cacert "$CACERT" -X GET "${URL}/${SECRET_NAME}" \
+                   -H "Authorization: Bearer $TOKEN" > /dev/null; then
+                 echo "[job]: Secret already exists skipping...."
+                 exit 0
+              fi
+
+              echo "[job]: Running 'did-helper' to generate material..."
+
+              /temp/entrypoint.sh
+
+              for f in cert.pem cert.pfx did.env private-key.pem public-key.pem; do
+                [ -f "/cert/$f" ] || {
+                  echo "[job]: Missing file '$f'"
+                  exit 1
+                }
+              done
+
+              echo "[job]: Preparing secret..."
+
+              pull() { base64 "/cert/$1" | tr -d '\n'; }
+
+              . /cert/did.env
+
+              curl -sfL -X POST "$URL" \
+                --cacert "$CACERT"  \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                --data '{
+                  "apiVersion": "v1",
+                  "kind": "Secret",
+                  "metadata": {"name": "'"$SECRET_NAME"'"},
+                  "type": "Opaque",
+                  "data": {
+                    "cert.pem": "'"$(pull cert.pem)"'",
+                    "cert.pfx": "'"$(pull cert.pfx)"'",
+                    "did.env": "'"$(pull did.env)"'",
+                    "private-key.pem": "'"$(pull private-key.pem)"'",
+                    "public-key.pem": "'"$(pull public-key.pem)"'"
+                  },
+                  "stringData": {
+                    "DID": "'"$DID"'"
+                  }
+                }' >/dev/null
+
+              echo "[job]: Secret created. Done."
+{{- end }}
+{{- end }}
+{{- end }}

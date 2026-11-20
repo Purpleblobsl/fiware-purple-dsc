@@ -1,0 +1,12 @@
+apiVersion: v2
+name: purple-dsc
+description: A helm wrapper for the fiware data space connector
+type: application
+version: 0.6.0
+dependencies:
+  - name: data-space-connector
+    alias: dsc
+    repository: https://fiware.github.io/data-space-connector/
+    version: 9.0.4
+    condition: dsc.enabled
+
